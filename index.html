@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Projet G7:Control de la température par ESP32</title>
+
+  <!-- MQTT.js -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    /* ===== THEME B : industriel clair (BLEU-NUIT avec touches vertes) ===== */
+    :root{
+      --bg: #0b1220;
+      --panel: #162235;
+      --accent: #0b74f0;      /* bleu électrique */
+      --muted: #9cb3d1;
+      --card-shadow: 0 8px 30px rgba(11,20,30,0.06);
+      --radius: 12px;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family: "Roboto", "Segoe UI", Arial, sans-serif;
+      background: linear-gradient(180deg,#071428 0%, #0b1220 100%);
+      color:#e6edf5;
+      display:flex;
+      justify-content:center;
+      padding:28px;
+    }
+    .frame{width:100%;max-width:1100px}
+    .card{
+      background:var(--panel); border-radius:var(--radius); box-shadow:var(--card-shadow);
+      padding:18px;
+    }
+
+    header{display:flex;align-items:center;gap:14px;margin-bottom:12px}
+    header h1{margin:0;font-size:1.2rem;color:var(--accent)}
+    header p{margin:0;color:var(--muted);font-size:0.9rem}
+
+    /* LOGIN */
+    #loginBox{width:100%;padding:18px;display:block}
+    .field{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+    input[type="text"], input[type="email"], input[type="password"]{
+      padding:10px;border-radius:8px;border:1px solid #274056;background:#0e1625;color:#e6edf5;font-size:0.95rem;
+    }
+    .muted{color:var(--muted);font-size:0.85rem}
+    .row-actions{display:flex;gap:10px;align-items:center;margin-top:8px}
+    button{
+      background:var(--accent); color:white; border:none; padding:10px 14px;border-radius:8px; cursor:pointer;
+      font-weight:600; box-shadow: 0 6px 18px rgba(11,116,240,0.12);
+    }
+    button.ghost{background:transparent;color:var(--accent);border:1px solid #2b3f60}
+
+    /* MAIN LAYOUT */
+    .grid{display:grid;grid-template-columns: 1fr 360px; gap:18px;margin-top:12px}
+    .left, .right {padding:14px; border-radius:10px;background:#091424;border:1px solid #1f2f4d}
+    .led-visual{width:110px;height:110px;border-radius:50%;margin:20px auto;background:#0b0b0b;box-shadow:0 0 12px #000;transition:all .25s}
+    .led-visual.on{background:#00ff84; box-shadow:0 0 40px #00ff84}
+    .led-visual.blink{animation:blink 1s infinite}
+    @keyframes blink{0%{opacity:1}50%{opacity:.18}100%{opacity:1}}
+
+    .controls{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:8px}
+    .controls button{min-width:120px}
+
+    .slider-box{margin-top:12px;padding:10px;border-radius:8px;border:1px dashed #163245;background:#0e1625}
+    input[type="range"]{width:100%}
+
+    .small{font-size:0.9rem;color:var(--muted)}
+    .admin-box{padding:10px;border-radius:8px;background:#0e1625;border:1px solid #2b3f60}
+
+    /* Logs & Stats hidden panels */
+    .collapsible{margin-top:12px}
+    .toggle-btn{background:#0e1625;color:#fff;padding:8px 10px;border-radius:8px;border:1px solid #2b3f60;cursor:pointer}
+
+    .logs{max-height:240px;overflow:auto;padding:8px;border-radius:8px;background:#071427;border:1px solid #1f2f4d}
+    .log-item{font-size:0.88rem;padding:8px;border-bottom:1px solid #0f2233;color:#b5c8e8}
+
+    /* Charts area */
+    .chart-wrap{display:flex;gap:12px;align-items:flex-start}
+    canvas{background:transparent;border-radius:8px}
+
+    /* responsive */
+    @media (max-width:980px){
+      .grid{grid-template-columns:1fr; }
+      .right {order:2}
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <div class="card">
+      <header>
+        <img src="" alt="" style="width:40px;height:40px;border-radius:8px;background:linear-gradient(45deg,#1c2b45,#2a3d5c)"/>
+        <div>
+          <h1>Projet G7: Control de la température par ESP32</h1>
+          <p>Contrôle distant via MQTT (HiveMQ Cloud)</p>
+        </div>
+      </header>
+
+      <!-- LOGIN -->
+      <div id="loginBox" class="card">
+        <h3>Connexion: Uniquement des personnes autorisées</h3>
+        <p class="muted">Veuillez vous identifier</p>
+
+        <div class="field">
+          <label class="muted">Nom complet</label>
+          <input id="nameInput" type="text" placeholder="Ex : Jonas KAPLAKA">
+        </div>
+        <div class="field">
+          <label class="muted">Adresse e-mail</label>
+          <input id="emailInput" type="email" placeholder="Ex : kapl@gmail.com">
+        </div>
+
+        <div class="row-actions">
+          <button id="okBtn">OK</button>
+          <button id="demoBtn" class="ghost" title="Mode démo">Mode Démo</button>
+          <div id="loginMsg" class="muted"></div>
+        </div>
+      </div>
+
+      <!-- MAIN (caché tant que non connecté) -->
+      <div id="mainBox" style="display:none">
+        <div class="grid">
+          <!-- LEFT: Controls -->
+          <div class="left">
+            <div style="text-align:center">
+              <div id="ledVisual" class="led-visual"></div>
+              <div id="statusText" class="small">Statut : <strong id="mqttStatus">Déconnecté</strong></div>
+            </div>
+
+            <div class="controls" style="margin-top:10px">
+              <button id="btnOn">Allumer</button>
+              <button id="btnOff">Éteindre</button>
+              <button id="btnBlink">Clignoter</button>
+              <button id="btnStop">Stop Blink</button>
+            </div>
+
+            <div class="slider-box">
+              <div class="small">Luminosité: <span id="brVal">200</span></div>
+              <input id="brRange" type="range" min="0" max="255" value="200">
+              <div style="margin-top:8px;text-align:right">
+                <button id="sendBright">Valider luminosité</button>
+              </div>
+            </div>
+
+            <div class="slider-box">
+              <div class="small">Vitesse clignotement (ms): <span id="spVal">500</span></div>
+              <input id="spRange" type="range" min="50" max="2000" value="500">
+              <div style="margin-top:8px;text-align:right">
+                <button id="sendSpeed">Valider vitesse</button>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:8px;margin-top:12px;justify-content:center">
+              <button id="toggleLogs" class="toggle-btn">Afficher Activités</button>
+              <button id="toggleStats" class="toggle-btn">Afficher Stats</button>
+            </div>
+
+            <div id="logsPanel" style="display:none;margin-top:10px">
+              <div class="logs" id="logs"></div>
+            </div>
+          </div>
+
+          <!-- RIGHT: Admin + Stats -->
+          <div class="right">
+            <div class="admin-box">
+              <div class="small">Admin connecté</div>
+              <div id="adminName" style="font-weight:700;font-size:1.05rem;margin-top:6px">— personne —</div>
+            </div>
+
+            <div style="margin-top:12px">
+              <h4 style="margin:8px 0 6px 0">Historique & Statistiques</h4>
+              <p class="muted">Cliquez sur <strong>Afficher Activités</strong> et <strong>Afficher Stats</strong> pour les voir.</p>
+
+              <div id="statsPanel" style="display:none;margin-top:10px">
+                <div class="chart-wrap">
+                  <div style="flex:1">
+                    <canvas id="barChart" width="400" height="260"></canvas>
+                  </div>
+                  <div style="width:240px">
+                    <canvas id="pieChart" width="240" height="240"></canvas>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div> <!-- end mainBox -->
+
+    </div>
+  </div>
+
+<script>
+/* ================== CONFIG BROKER ==================
+   Remplace si besoin. Actuellement rempli avec tes infos.
+==================================================== */
+const MQTT_HOST = "bda07f3625974b0aa1699e47b5dc6dc2.s1.eu.hivemq.cloud";
+const MQTT_WS = "wss://" + MQTT_HOST + ":8884/mqtt";
+const MQTT_USER = "esp32G7user";
+const MQTT_PASS = "kamjo13175338L";
+
+const TOPIC_CONTROL = "Projet G7:Control de la température par ESP32/led/control";
+const TOPIC_STATUS  = "Projet G7:Control de la température par ESP32/led/status";
+const TOPIC_LOG     = "Projet G7:Control de la température par ESP32/led/log";
+
+/* ======== Utilisateurs autorisés (cachés dans le code) ========
+   Ces informations ne sont PAS affichées à l'utilisateur.
+============================================================== */
+const allowed = {
+  "kapl@gmail.com":"Jonas KAPLAKA",
+  "kamb@gmail.com":"Pierre KAMBU",
+  "lank@gmail.com":"Abdel LANKOANDE"
+};
+
+/* ======== UI refs ======== */
+const loginBox = document.getElementById("loginBox");
+const mainBox  = document.getElementById("mainBox");
+const okBtn = document.getElementById("okBtn");
+const demoBtn = document.getElementById("demoBtn");
+const nameInput = document.getElementById("nameInput");
+const emailInput = document.getElementById("emailInput");
+const loginMsg = document.getElementById("loginMsg");
+
+const btnOn = document.getElementById("btnOn");
+const btnOff = document.getElementById("btnOff");
+const btnBlink = document.getElementById("btnBlink");
+const btnStop = document.getElementById("btnStop");
+const brRange = document.getElementById("brRange");
+const spRange = document.getElementById("spRange");
+const sendBright = document.getElementById("sendBright");
+const sendSpeed = document.getElementById("sendSpeed");
+const brVal = document.getElementById("brVal");
+const spVal = document.getElementById("spVal");
+const ledVisual = document.getElementById("ledVisual");
+const mqttStatus = document.getElementById("mqttStatus");
+const adminName = document.getElementById("adminName");
+const logsDiv = document.getElementById("logs");
+const toggleLogs = document.getElementById("toggleLogs");
+const toggleStats = document.getElementById("toggleStats");
+const logsPanel = document.getElementById("logsPanel");
+const statsPanel = document.getElementById("statsPanel");
+const statusText = document.getElementById("statusText");
+
+let currentUser = null;
+let client = null;
+let stats = JSON.parse(localStorage.getItem("projet_stats") || 'null') || {"Jonas KAPLAKA":0,"Pierre KAMBU":0,"Abdel LANKOANDE":0};
+let logs = JSON.parse(localStorage.getItem("projet_logs") || '[]');
+let barChart=null, pieChart=null;
+
+/* ======== MQTT connect ======== */
+function mqttConnect() {
+  const clientId = "web_" + Math.floor(Math.random()*10000);
+  client = mqtt.connect(MQTT_WS, {
+    clientId,
+    username: MQTT_USER,
+    password: MQTT_PASS,
+    clean: true,
+    reconnectPeriod: 2000
+  });
+
+  client.on("connect", () => {
+    mqttStatus.textContent = "✅ Connected";
+    client.subscribe(TOPIC_STATUS);
+    client.subscribe(TOPIC_LOG);
+  });
+  client.on("reconnect", () => mqttStatus.textContent = "🔄 Reconnecting...");
+  client.on("error", (e) => { mqttStatus.textContent = "❌ "+e; console.error(e); });
+  client.on("message", (topic, message) => {
+    const msg = message.toString();
+    if (topic === TOPIC_STATUS) {
+      updateLedVisual(msg);
+    } else if (topic === TOPIC_LOG) {
+      pushLog(msg);
+    }
+  });
+}
+
+/* ======== Login logic (CORRIGÉ : accepte seulement les 3 comptes autorisés) ======== */
+okBtn.onclick = () => {
+  const email = (emailInput.value||"").trim().toLowerCase();
+  const name  = (nameInput.value||"").trim();
+  if (!email || !name) { loginMsg.textContent = "Remplis les deux champs"; return; }
+
+  // check email exists and name matches the authorized mapping (case-insensitive check)
+  if (allowed[email] && allowed[email].toLowerCase() === name.toLowerCase()) {
+    // Success
+    currentUser = allowed[email]; // canonical name
+    adminName.textContent = currentUser;
+    loginBox.style.display = "none";
+    mainBox.style.display = "block";
+    mqttConnect();
+    addLocalLog(currentUser + ";login;" + Date.now());
+    renderLogs();
+    renderCharts();
+    loginMsg.textContent = ""; // clear msg
+  } else {
+    loginMsg.textContent = "Accès refusé — identifiants incorrects";
+  }
+};
+
+/* Demo button (no auth) - kept for testing purpose, does not use allowed list */
+demoBtn.onclick = () => {
+  currentUser = "Demo User";
+  adminName.textContent = currentUser + " (DEMO)";
+  loginBox.style.display = "none";
+  mainBox.style.display = "block";
+  mqttConnect();
+  addLocalLog(currentUser + ";demo_login;" + Date.now());
+  renderLogs();
+  renderCharts();
+};
+
+/* ======== Publish helper (user;cmd;value) ======== */
+function publishCommand(cmd, value="") {
+  if (!currentUser) { alert("Identifie-toi d'abord"); return; }
+  const payload = currentUser + ";" + cmd + ";" + value;
+  client && client.publish(TOPIC_CONTROL, payload);
+  // local echo + stat increment (optimistic)
+  pushLog(payload + ";" + Date.now());
+  incrementStat(currentUser);
+}
+
+/* Buttons events */
+btnOn.onclick = () => publishCommand("on","");
+btnOff.onclick = () => publishCommand("off","");
+btnBlink.onclick = () => publishCommand("blink","");
+btnStop.onclick = () => publishCommand("stop","");
+brRange.oninput = () => { brVal.textContent = brRange.value; }
+spRange.oninput = () => { spVal.textContent = spRange.value; }
+sendBright.onclick = () => publishCommand("brightness", brRange.value);
+sendSpeed.onclick = () => publishCommand("speed", spRange.value);
+
+/* Toggle logs/stats visibility */
+toggleLogs.onclick = () => {
+  const show = logsPanel.style.display === "none" || logsPanel.style.display === "";
+  logsPanel.style.display = show ? "block" : "none";
+  renderLogs();
+};
+toggleStats.onclick = () => {
+  const show = statsPanel.style.display === "none" || statsPanel.style.display === "";
+  statsPanel.style.display = show ? "block" : "none";
+  renderCharts();
+};
+
+/* ======== Logs & Stats ======== */
+function pushLog(raw) {
+  logs.unshift(raw);
+  if (logs.length > 100) logs.pop();
+  localStorage.setItem("projet_logs", JSON.stringify(logs));
+  renderLogs();
+  // try to parse user;cmd;timestamp and update stats
+  const parts = raw.split(';');
+  if (parts.length >= 2) {
+    const user = parts[0];
+    if (user in stats) incrementStat(user);
+  }
+}
+function addLocalLog(raw) { pushLog(raw); }
+
+function renderLogs() {
+  logsDiv.innerHTML = "";
+  for (let i=0;i<logs.length;i++) {
+    const d = document.createElement("div");
+    d.className = "log-item";
+    d.textContent = logs[i];
+    logsDiv.appendChild(d);
+  }
+}
+
+/* Stats */
+function incrementStat(user) {
+  if (!stats[user]) stats[user]=0;
+  stats[user]+=1;
+  localStorage.setItem("projet_stats", JSON.stringify(stats));
+  renderCharts();
+}
+
+/* ======== Charts (Chart.js) ======== */
+function renderCharts() {
+  // prepare data
+  const labels = Object.keys(stats);
+  const data = labels.map(l => stats[l] || 0);
+  // bar chart
+  const barCtx = document.getElementById('barChart').getContext('2d');
+  if (barChart) barChart.destroy();
+  barChart = new Chart(barCtx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Actions',
+        data,
+        backgroundColor: ['#0b74f0','#00bcd4','#ff8a65'],
+        borderRadius:6
+      }]
+    },
+    options: {
+      responsive:true,
+      plugins: { legend:{display:false} },
+      scales: { y: { beginAtZero:true, ticks:{precision:0} } }
+    }
+  });
+
+  // pie chart
+  const pieCtx = document.getElementById('pieChart').getContext('2d');
+  if (pieChart) pieChart.destroy();
+  pieChart = new Chart(pieCtx, {
+    type:'pie',
+    data: { labels, datasets:[{ data, backgroundColor:['#0b74f0','#00bcd4','#ff8a65']}] },
+    options:{ responsive:true, plugins:{ legend:{position:'bottom'} } }
+  });
+}
+
+/* ======== Visual update from topic messages ======== */
+function updateLedVisual(msg) {
+  if (!msg) return;
+  if (msg.startsWith("ON")) {
+    ledVisual.classList.remove("blink"); ledVisual.classList.add("on");
+    statusText.textContent = "Statut : LED ON";
+  } else if (msg.startsWith("OFF")) {
+    ledVisual.classList.remove("blink"); ledVisual.classList.remove("on");
+    statusText.textContent = "Statut : LED OFF";
+  } else if (msg.startsWith("BLINK")) {
+    ledVisual.classList.add("blink");
+    statusText.textContent = "Statut : LED BLINK";
+  } else if (msg.startsWith("BRIGHTNESS")) {
+    statusText.textContent = "Statut : " + msg;
+  } else if (msg.startsWith("SPEED")) {
+    statusText.textContent = "Statut : " + msg;
+  } else if (msg === "ONLINE") {
+    statusText.textContent = "Statut : ESP32 ONLINE";
+  }
+}
+
+/* ======== Init: load local logs/stats ======== */
+(function init(){
+  // defaults
+  renderLogs();
+  renderCharts();
+})();
+</script>
+</body>
+</html>
+ 
