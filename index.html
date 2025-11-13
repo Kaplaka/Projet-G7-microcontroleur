@@ -195,28 +195,28 @@
   </div>
 
 <script>
-/* ================== CONFIG BROKER ==================
-   Remplace si besoin. Actuellement rempli avec tes infos.
-==================================================== */
+/* ================== CONFIG BROKER ================== */
 const MQTT_HOST = "bda07f3625974b0aa1699e47b5dc6dc2.s1.eu.hivemq.cloud";
 const MQTT_WS = "wss://" + MQTT_HOST + ":8884/mqtt";
 const MQTT_USER = "esp32G7user";
 const MQTT_PASS = "kamjo13175338L";
 
-const TOPIC_CONTROL = "Projet G7:Control de la température par ESP32/led/control";
-const TOPIC_STATUS  = "Projet G7:Control de la température par ESP32/led/status";
-const TOPIC_LOG     = "Projet G7:Control de la température par ESP32/led/log";
+const TOPIC_CONTROL = "ProjetG7/led/control";
+const TOPIC_STATUS  = "ProjetG7/led/status";
+const TOPIC_LOG     = "ProjetG7/led/log";
 
-/* ======== Utilisateurs autorisés (cachés dans le code) ========
-   Ces informations ne sont PAS affichées à l'utilisateur.
-============================================================== */
+/* 🆕 Topics ajoutés pour synchroniser les interfaces entre utilisateurs */
+const TOPIC_ADMIN   = "ProjetG7/admin/connected";
+const TOPIC_STATS   = "ProjetG7/stats/shared";
+
+/* ======== Utilisateurs autorisés ======== */
 const allowed = {
   "kapl@gmail.com":"Jonas KAPLAKA",
-  "kamb@gmail.com":"Pierre KAMBU",
+  "kamb@gmail.com":"Pierre KAMBOU",
   "lank@gmail.com":"Abdel LANKOANDE"
 };
 
-/* ======== UI refs ======== */
+/* ======== Références HTML ======== */
 const loginBox = document.getElementById("loginBox");
 const mainBox  = document.getElementById("mainBox");
 const okBtn = document.getElementById("okBtn");
@@ -247,11 +247,11 @@ const statusText = document.getElementById("statusText");
 
 let currentUser = null;
 let client = null;
-let stats = JSON.parse(localStorage.getItem("projet_stats") || 'null') || {"Jonas KAPLAKA":0,"Pierre KAMBU":0,"Abdel LANKOANDE":0};
-let logs = JSON.parse(localStorage.getItem("projet_logs") || '[]');
+let stats = {"Jonas KAPLAKA":0,"Pierre KAMBOU":0,"Abdel LANKOANDE":0};
+let logs = [];
 let barChart=null, pieChart=null;
 
-/* ======== MQTT connect ======== */
+/* ======== Connexion MQTT ======== */
 function mqttConnect() {
   const clientId = "web_" + Math.floor(Math.random()*10000);
   client = mqtt.connect(MQTT_WS, {
@@ -263,32 +263,37 @@ function mqttConnect() {
   });
 
   client.on("connect", () => {
-    mqttStatus.textContent = "✅ Connected";
+    mqttStatus.textContent = "✅ Connecté à HiveMQ";
     client.subscribe(TOPIC_STATUS);
     client.subscribe(TOPIC_LOG);
+    client.subscribe(TOPIC_ADMIN);
+    client.subscribe(TOPIC_STATS);
+
+    // Annonce du nouvel utilisateur connecté
+    client.publish(TOPIC_ADMIN, currentUser);
   });
-  client.on("reconnect", () => mqttStatus.textContent = "🔄 Reconnecting...");
-  client.on("error", (e) => { mqttStatus.textContent = "❌ "+e; console.error(e); });
+
+  client.on("reconnect", () => mqttStatus.textContent = "🔄 Reconnexion...");
+  client.on("error", (e) => { mqttStatus.textContent = "❌ " + e; console.error(e); });
+
   client.on("message", (topic, message) => {
     const msg = message.toString();
-    if (topic === TOPIC_STATUS) {
-      updateLedVisual(msg);
-    } else if (topic === TOPIC_LOG) {
-      pushLog(msg);
-    }
+
+    if (topic === TOPIC_STATUS) updateLedVisual(msg);
+    else if (topic === TOPIC_LOG) pushLog(msg);
+    else if (topic === TOPIC_ADMIN) updateAdminDisplay(msg);
+    else if (topic === TOPIC_STATS) syncStats(msg);
   });
 }
 
-/* ======== Login logic (CORRIGÉ : accepte seulement les 3 comptes autorisés) ======== */
+/* ======== Gestion du Login ======== */
 okBtn.onclick = () => {
   const email = (emailInput.value||"").trim().toLowerCase();
   const name  = (nameInput.value||"").trim();
   if (!email || !name) { loginMsg.textContent = "Remplis les deux champs"; return; }
 
-  // check email exists and name matches the authorized mapping (case-insensitive check)
   if (allowed[email] && allowed[email].toLowerCase() === name.toLowerCase()) {
-    // Success
-    currentUser = allowed[email]; // canonical name
+    currentUser = allowed[email];
     adminName.textContent = currentUser;
     loginBox.style.display = "none";
     mainBox.style.display = "block";
@@ -296,53 +301,47 @@ okBtn.onclick = () => {
     addLocalLog(currentUser + ";login;" + Date.now());
     renderLogs();
     renderCharts();
-    loginMsg.textContent = ""; // clear msg
+    loginMsg.textContent = "";
   } else {
     loginMsg.textContent = "Accès refusé — identifiants incorrects";
   }
 };
 
-/* Demo button (no auth) - kept for testing purpose, does not use allowed list */
 demoBtn.onclick = () => {
   currentUser = "Demo User";
   adminName.textContent = currentUser + " (DEMO)";
   loginBox.style.display = "none";
   mainBox.style.display = "block";
   mqttConnect();
-  addLocalLog(currentUser + ";demo_login;" + Date.now());
-  renderLogs();
-  renderCharts();
 };
 
-/* ======== Publish helper (user;cmd;value) ======== */
+/* ======== Publier une action ======== */
 function publishCommand(cmd, value="") {
   if (!currentUser) { alert("Identifie-toi d'abord"); return; }
   const payload = currentUser + ";" + cmd + ";" + value;
-  client && client.publish(TOPIC_CONTROL, payload);
-  // local echo + stat increment (optimistic)
+  client.publish(TOPIC_CONTROL, payload);
   pushLog(payload + ";" + Date.now());
   incrementStat(currentUser);
+  // 🆕 partage les stats à tous les clients
+  client.publish(TOPIC_STATS, JSON.stringify(stats));
 }
 
-/* Buttons events */
-btnOn.onclick = () => publishCommand("on","");
-btnOff.onclick = () => publishCommand("off","");
-btnBlink.onclick = () => publishCommand("blink","");
-btnStop.onclick = () => publishCommand("stop","");
-brRange.oninput = () => { brVal.textContent = brRange.value; }
-spRange.oninput = () => { spVal.textContent = spRange.value; }
+/* ======== Boutons ======== */
+btnOn.onclick = () => publishCommand("on");
+btnOff.onclick = () => publishCommand("off");
+btnBlink.onclick = () => publishCommand("blink");
+btnStop.onclick = () => publishCommand("stop");
+brRange.oninput = () => brVal.textContent = brRange.value;
+spRange.oninput = () => spVal.textContent = spRange.value;
 sendBright.onclick = () => publishCommand("brightness", brRange.value);
 sendSpeed.onclick = () => publishCommand("speed", spRange.value);
 
-/* Toggle logs/stats visibility */
 toggleLogs.onclick = () => {
-  const show = logsPanel.style.display === "none" || logsPanel.style.display === "";
-  logsPanel.style.display = show ? "block" : "none";
+  logsPanel.style.display = (logsPanel.style.display === "block") ? "none" : "block";
   renderLogs();
 };
 toggleStats.onclick = () => {
-  const show = statsPanel.style.display === "none" || statsPanel.style.display === "";
-  statsPanel.style.display = show ? "block" : "none";
+  statsPanel.style.display = (statsPanel.style.display === "block") ? "none" : "block";
   renderCharts();
 };
 
@@ -350,72 +349,70 @@ toggleStats.onclick = () => {
 function pushLog(raw) {
   logs.unshift(raw);
   if (logs.length > 100) logs.pop();
-  localStorage.setItem("projet_logs", JSON.stringify(logs));
   renderLogs();
-  // try to parse user;cmd;timestamp and update stats
   const parts = raw.split(';');
   if (parts.length >= 2) {
     const user = parts[0];
     if (user in stats) incrementStat(user);
   }
 }
+
 function addLocalLog(raw) { pushLog(raw); }
 
 function renderLogs() {
   logsDiv.innerHTML = "";
-  for (let i=0;i<logs.length;i++) {
+  for (const log of logs) {
     const d = document.createElement("div");
     d.className = "log-item";
-    d.textContent = logs[i];
+    d.textContent = log;
     logsDiv.appendChild(d);
   }
 }
 
-/* Stats */
 function incrementStat(user) {
   if (!stats[user]) stats[user]=0;
   stats[user]+=1;
-  localStorage.setItem("projet_stats", JSON.stringify(stats));
   renderCharts();
 }
 
-/* ======== Charts (Chart.js) ======== */
+/* ======== Synchronisation entre clients ======== */
+function updateAdminDisplay(name) {
+  adminName.textContent = name;
+}
+
+function syncStats(jsonData) {
+  try {
+    const shared = JSON.parse(jsonData);
+    stats = shared;
+    renderCharts();
+  } catch (e) { console.error("Erreur synchro stats:", e); }
+}
+
+/* ======== Graphiques ======== */
 function renderCharts() {
-  // prepare data
   const labels = Object.keys(stats);
   const data = labels.map(l => stats[l] || 0);
-  // bar chart
   const barCtx = document.getElementById('barChart').getContext('2d');
   if (barChart) barChart.destroy();
   barChart = new Chart(barCtx, {
     type: 'bar',
     data: {
       labels,
-      datasets: [{
-        label: 'Actions',
-        data,
-        backgroundColor: ['#0b74f0','#00bcd4','#ff8a65'],
-        borderRadius:6
-      }]
+      datasets: [{ label: 'Actions', data, backgroundColor: ['#0b74f0','#00bcd4','#ff8a65'], borderRadius:6 }]
     },
-    options: {
-      responsive:true,
-      plugins: { legend:{display:false} },
-      scales: { y: { beginAtZero:true, ticks:{precision:0} } }
-    }
+    options: { plugins: { legend:{display:false} }, scales:{ y:{beginAtZero:true, ticks:{precision:0}} } }
   });
 
-  // pie chart
   const pieCtx = document.getElementById('pieChart').getContext('2d');
   if (pieChart) pieChart.destroy();
   pieChart = new Chart(pieCtx, {
     type:'pie',
-    data: { labels, datasets:[{ data, backgroundColor:['#0b74f0','#00bcd4','#ff8a65']}] },
-    options:{ responsive:true, plugins:{ legend:{position:'bottom'} } }
+    data:{ labels, datasets:[{ data, backgroundColor:['#0b74f0','#00bcd4','#ff8a65'] }] },
+    options:{ plugins:{ legend:{position:'bottom'} } }
   });
 }
 
-/* ======== Visual update from topic messages ======== */
+/* ======== LED Visual ======== */
 function updateLedVisual(msg) {
   if (!msg) return;
   if (msg.startsWith("ON")) {
@@ -436,13 +433,13 @@ function updateLedVisual(msg) {
   }
 }
 
-/* ======== Init: load local logs/stats ======== */
+/* ======== Initialisation ======== */
 (function init(){
-  // defaults
   renderLogs();
   renderCharts();
 })();
 </script>
+
 </body>
 </html>
  
